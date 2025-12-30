@@ -240,9 +240,8 @@ async def get_cart_document(db: AsyncIOMotorDatabase, user_id: int, check_expiry
 
 def recalculate_total(cart):
     """Пересчитывает общую сумму корзины."""
-    cart["total_amount"] = round(
-        sum((item.get("price") or 0) * (item.get("quantity") or 0) for item in cart.get("items", [])), 2
-    )
+    items_total = sum((item.get("price") or 0) * (item.get("quantity") or 0) for item in cart.get("items", []))
+    cart["total_amount"] = round(items_total + 1000, 2)  # Добавляем доставку 1000
     return cart
 
 

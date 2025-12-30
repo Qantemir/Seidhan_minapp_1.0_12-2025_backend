@@ -111,13 +111,18 @@ async def notify_admins_new_order(
     address_link = f"[{delivery_address}]({address_2gis_url})"
 
     # Формируем текст сообщения
+    # Вычисляем сумму товаров без доставки для отображения
+    items_total = sum((item.get("price", 0) or 0) * (item.get("quantity", 0) or 0) for item in items)
+    delivery_fee = 1000
     message = (
         f"🆕 *Новый заказ!*\n\n"
         f"📋 Заказ: `{order_id[-6:]}`\n"
         f"👤 Клиент: {customer_name}\n"
         f"📞 Телефон: {customer_phone}\n"
         f"📍 Адрес: {address_link}\n"
-        f"💰 Сумма: {format_amount(total_amount)} ₸\n\n"
+        f"💰 Товары: {format_amount(items_total)} ₸\n"
+        f"🚚 Доставка: {format_amount(delivery_fee)} ₸\n"
+        f"💰 *Итого: {format_amount(total_amount)} ₸*\n\n"
         f"{items_text}"
     )
 
@@ -301,7 +306,9 @@ async def notify_customer_order_status(
         return
 
     # Формируем сообщение в зависимости от статуса
-    if order_status == "принят":
+    if order_status == "новый":
+        status_message = "✅ Ваш заказ успешно оформлен! Мы получили ваш заказ и скоро с вами свяжемся."
+    elif order_status == "принят":
         status_message = "✅ Ваш заказ принят! Мы привезем его в течение часа."
     elif order_status == "отказано":
         reason_text = f"\n\nПричина: {rejection_reason}" if rejection_reason else ""

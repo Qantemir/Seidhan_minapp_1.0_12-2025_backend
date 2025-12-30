@@ -12,7 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from ..config import settings
 from ..database import get_db
-from ..notifications import notify_admins_new_order
+from ..notifications import notify_admins_new_order, notify_customer_order_status
 from ..schemas import Cart, Order, OrderStatus
 from ..security import TelegramUser, get_current_user
 from ..utils import as_object_id, compress_image_bytes, ensure_store_is_awake, get_gridfs, serialize_doc, validate_phone_number
@@ -188,7 +188,7 @@ async def create_order(
         "comment": comment,
         "status": OrderStatus.NEW.value,
         "items": items_dict,
-        "total_amount": cart.total_amount,
+        "total_amount": cart.total_amount + 1000,  # Добавляем доставку 1000
         "can_edit_address": False,  # Адрес нельзя редактировать после создания
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
@@ -232,11 +232,20 @@ async def create_order(
         customer_name=name,
         customer_phone=phone,
         delivery_address=address,
-        total_amount=cart.total_amount,
+        total_amount=cart.total_amount + 1000,  # Добавляем доставку
         items=items_dict,  # Используем уже преобразованные данные
         user_id=user_id,
         receipt_file_id=receipt_file_id,
         db=db,
+    )
+
+    # Отправляем уведомление клиенту о создании заказа
+    background_tasks.add_task(
+        notify_customer_order_status,
+        user_id=user_id,
+        order_id=order.id,
+        order_status="новый",
+        customer_name=name,
     )
 
     return order
