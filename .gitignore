@@ -1,0 +1,40 @@
+# virtual envs and python artifacts
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+
+# tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# builds and packages
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# logs and runtime
+*.log
+celerybeat-schedule
+instance/
+logs/
+
+# env and secrets
+.env
+.env.*
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/
+
+# node-related (if present)
+node_modules/
+
