@@ -175,7 +175,11 @@ async def create_order(
                     if variant and variant.get("quantity", 0) < 0:
                         raise HTTPException(status_code=400, detail=f"Товар '{item.product_name}' больше не доступен")
 
-    receipt_file_id, original_filename = await _save_payment_receipt(db, payment_receipt)
+    # Обрабатываем чек об оплате, если он передан
+    receipt_file_id = None
+    original_filename = None
+    if payment_receipt:
+        receipt_file_id, original_filename = await _save_payment_receipt(db, payment_receipt)
 
     # Преобразуем items один раз для переиспользования
     items_dict = [item.dict() for item in cart.items]
@@ -192,8 +196,8 @@ async def create_order(
         "can_edit_address": False,  # Адрес нельзя редактировать после создания
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
-        "payment_receipt_file_id": receipt_file_id,  # ID файла в GridFS
-        "payment_receipt_filename": original_filename,
+        "payment_receipt_file_id": receipt_file_id,  # ID файла в GridFS (может быть None)
+        "payment_receipt_filename": original_filename,  # Может быть None
         "delivery_type": delivery_type,
         "payment_type": payment_type,
     }
@@ -201,13 +205,14 @@ async def create_order(
     try:
         result = await db.orders.insert_one(order_doc)
     except Exception:
-        # Удаляем файл из GridFS при ошибке (fire-and-forget)
-        try:
-            asyncio.create_task(
-                asyncio.get_event_loop().run_in_executor(None, lambda: get_gridfs().delete(ObjectId(receipt_file_id)))
-            )
-        except Exception:
-            pass
+        # Удаляем файл из GridFS при ошибке (только если файл был загружен)
+        if receipt_file_id:
+            try:
+                asyncio.create_task(
+                    asyncio.get_event_loop().run_in_executor(None, lambda: get_gridfs().delete(ObjectId(receipt_file_id)))
+                )
+            except Exception:
+                pass
         raise
 
     # Добавляем _id к order_doc для создания ответа без дополнительного запроса к БД
