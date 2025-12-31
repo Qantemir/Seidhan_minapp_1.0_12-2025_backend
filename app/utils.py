@@ -785,10 +785,10 @@ async def delete_product_images_from_gridfs(
     if product_doc.get("image"):
         image_id = product_doc["image"]
         # Проверяем, что это не base64 строка (старые данные)
-            if isinstance(image_id, str) and not image_id.startswith("data:image") and ObjectId.is_valid(image_id):
-                try:
-                    await loop.run_in_executor(None, _delete_gridfs_file, image_id)
-                except Exception as e:
+        if isinstance(image_id, str) and not image_id.startswith("data:image") and ObjectId.is_valid(image_id):
+            try:
+                await loop.run_in_executor(None, _delete_gridfs_file, image_id)
+            except Exception as e:
                 logger.error(f"Ошибка при удалении основного изображения товара {image_id}: {e}")
     
     # Удаляем дополнительные изображения
