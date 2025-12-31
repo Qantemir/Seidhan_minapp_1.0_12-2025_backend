@@ -554,21 +554,65 @@ async def _handle_start_command(chat_id: int, user_id: int):
         return False
 
     welcome_message = (
-        "👋 Добро пожаловать!\n\n"
-        "Это мини-приложение для заказа товаров. "
-        "Чтобы начать покупки, перейдите в мини-приложение ниже ⬇️\n\n"
-        "Там вы сможете просмотреть каталог, добавить товары в корзину и оформить заказ."
+        "🎉 <b>Добро пожаловать в лучший магазин Telegram!</b> 🎉\n\n"
+        "🔥 <b>Покупайте с комфортом, не выходя из мессенджера!</b>\n\n"
+        "💎 <b>Почему выбирают нас:</b>\n"
+        "✨ Широкий выбор качественных товаров\n"
+        "⚡ Мгновенное оформление заказа\n"
+        "🔒 Безопасные платежи\n"
+        "🚀 Быстрая доставка\n"
+        "💬 Круглосуточная поддержка\n"
+        "🎁 Эксклюзивные предложения\n\n"
+        "👉 <b>Нажмите кнопку ниже и начните шопинг прямо сейчас!</b>\n\n"
+        "🌟 <i>Мы делаем покупки простыми и приятными!</i>"
     )
+
+    # Получаем URL фронтенда для Web App кнопки
+    import os
+    frontend_url = (
+        os.getenv("FRONTEND_URL") or
+        os.getenv("NEXT_PUBLIC_VITE_PUBLIC_URL") or
+        os.getenv("VITE_PUBLIC_URL") or
+        os.getenv("RAILWAY_PUBLIC_DOMAIN")
+    )
+    
+    # Формируем URL мини-приложения
+    if frontend_url:
+        # Нормализуем URL
+        if not frontend_url.startswith(("http://", "https://")):
+            frontend_url = f"https://{frontend_url}"
+        web_app_url = frontend_url.rstrip("/")
+    else:
+        # Если URL не указан, не добавляем кнопку
+        web_app_url = None
+
+    # Формируем клавиатуру с кнопкой Web App
+    reply_markup = None
+    if web_app_url:
+        reply_markup = {
+            "inline_keyboard": [[
+                {
+                    "text": "🛍️ Открыть магазин и начать покупки",
+                    "web_app": {"url": web_app_url}
+                }
+            ]]
+        }
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
+            message_data = {
+                "chat_id": chat_id,
+                "text": welcome_message,
+                "parse_mode": "HTML",
+            }
+            
+            if reply_markup:
+                import json
+                message_data["reply_markup"] = json.dumps(reply_markup)
+            
             response = await client.post(
                 f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": welcome_message,
-                    "parse_mode": "HTML",
-                },
+                json=message_data,
             )
             result = response.json()
             if result.get("ok"):
