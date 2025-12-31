@@ -43,7 +43,7 @@ async def notify_admins_new_order(
     db: AsyncIOMotorDatabase,
 ) -> None:
     """
-    Отправляет уведомление всем администраторам о новом заказе с фото чека.
+    Отправляет простое уведомление всем администраторам о новом заказе с кнопкой "Принять заказ".
 
     Args:
         order_id: ID заказа
@@ -54,6 +54,98 @@ async def notify_admins_new_order(
         items: Список товаров в заказе
         user_id: Telegram ID клиента
         receipt_file_id: ID файла чека в GridFS
+        db: База данных для доступа к GridFS
+    """
+    settings = get_settings()
+
+    # Быстрая проверка настроек
+    if not settings.telegram_bot_token or not settings.admin_ids:
+        return
+
+    # Простое сообщение без деталей
+    message = f"🆕 *Новый заказ!*\n\n📋 Заказ: `{order_id[-6:]}`"
+
+    # Создаем кнопку "Принять заказ"
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "✅ Принять заказ", "callback_data": f"accept_order_{order_id}"}],
+        ]
+    }
+
+    # Отправляем уведомление каждому администратору
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        tasks = []
+        for admin_id in settings.admin_ids:
+            tasks.append(
+                _send_simple_notification(
+                    client,
+                    settings.telegram_bot_token,
+                    admin_id,
+                    message,
+                    keyboard,
+                )
+            )
+
+        # Выполняем все отправки параллельно
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _send_simple_notification(
+    client: httpx.AsyncClient,
+    bot_token: str,
+    admin_id: int,
+    message: str,
+    keyboard: dict,
+) -> bool:
+    """
+    Отправляет простое текстовое уведомление администратору.
+
+    Returns:
+        True если отправка успешна, False в противном случае
+    """
+    try:
+        api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        response = await client.post(
+            api_url,
+            json={
+                "chat_id": admin_id,
+                "text": message,
+                "parse_mode": "Markdown",
+                "reply_markup": keyboard,
+            },
+        )
+        return response.json().get("ok", False)
+    except Exception as e:
+        logger.error(f"Ошибка при отправке уведомления администратору {admin_id}: {e}")
+        return False
+
+
+async def notify_admin_order_accepted(
+    order_id: str,
+    customer_name: str,
+    customer_phone: str,
+    delivery_address: str,
+    total_amount: float,
+    items: list,
+    user_id: int,
+    receipt_file_id: str,
+    delivery_time_slot: str,
+    db: AsyncIOMotorDatabase,
+) -> None:
+    """
+    Отправляет полное уведомление администратору о принятом заказе с временным промежутком,
+    всей информацией, товарами и чеком.
+
+    Args:
+        order_id: ID заказа
+        customer_name: Имя клиента
+        customer_phone: Телефон клиента
+        delivery_address: Адрес доставки
+        total_amount: Общая сумма заказа
+        items: Список товаров в заказе
+        user_id: Telegram ID клиента
+        receipt_file_id: ID файла чека в GridFS
+        delivery_time_slot: Временной промежуток доставки (например, "13:00-14:00")
         db: База данных для доступа к GridFS
     """
     settings = get_settings()
@@ -98,25 +190,17 @@ async def notify_admins_new_order(
     from urllib.parse import quote
 
     # Кодируем оригинальный адрес со всеми символами включая "/"
-    # Символ "/" будет закодирован как "%2F"
     address_encoded = quote(delivery_address, safe="")
-
-    # Используем формат с путем - 2ГИС должен правильно обработать закодированный адрес
-    # Используем 2gis.kz для Казахстана (так как используется тенге)
-    # Формат: https://2gis.kz/search/закодированный_адрес
-    # Например: "Ломова 181/2" -> "https://2gis.kz/search/%D0%9B%D0%BE%D0%BC%D0%BE%D0%B2%D0%B0%20181%2F2"
     address_2gis_url = f"https://2gis.kz/search/{address_encoded}"
-
-    # В ссылке показываем оригинальный адрес с "/"
     address_link = f"[{delivery_address}]({address_2gis_url})"
 
     # Формируем текст сообщения
-    # Вычисляем сумму товаров без доставки для отображения
     items_total = sum((item.get("price", 0) or 0) * (item.get("quantity", 0) or 0) for item in items)
     delivery_fee = 1000
     message = (
-        f"🆕 *Новый заказ!*\n\n"
+        f"✅ *Заказ принят!*\n\n"
         f"📋 Заказ: `{order_id[-6:]}`\n"
+        f"⏰ Время доставки: *{delivery_time_slot}*\n\n"
         f"👤 Клиент: {customer_name}\n"
         f"📞 Телефон: {customer_phone}\n"
         f"📍 Адрес: {address_link}\n"
@@ -132,20 +216,19 @@ async def notify_admins_new_order(
     receipt_content_type = None
     if receipt_file_id:
         try:
-            # Используем синхронный GridFS клиент через утилиту
             fs = get_gridfs()
             loop = asyncio.get_event_loop()
-
-            # Получаем файл из GridFS (синхронная операция в executor)
             grid_file = await loop.run_in_executor(None, lambda: fs.get(ObjectId(receipt_file_id)))
             receipt_data = await loop.run_in_executor(None, grid_file.read)
             receipt_filename = grid_file.filename or "receipt"
             receipt_content_type = grid_file.content_type or "application/octet-stream"
-
             if not receipt_data:
                 receipt_data = None
         except Exception:
-            receipt_data = None  # Игнорируем ошибки для скорости
+            receipt_data = None
+
+    # Создаем ссылку на чат с клиентом
+    chat_link = f"tg://user?id={user_id}"
 
     # Отправляем уведомление каждому администратору
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -160,15 +243,12 @@ async def notify_admins_new_order(
                     receipt_data,
                     receipt_filename,
                     receipt_content_type,
-                    order_id,
-                    user_id,
+                    chat_link,
                 )
             )
 
         # Выполняем все отправки параллельно
         await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Убираем логирование для скорости (не критично)
 
 
 async def _send_notification_with_receipt(
@@ -179,8 +259,7 @@ async def _send_notification_with_receipt(
     receipt_data: bytes | None,
     receipt_filename: str | None,
     receipt_content_type: str | None,
-    order_id: str,
-    user_id: int,
+    chat_link: str,
 ) -> bool:
     """
     Отправляет уведомление администратору с фото чека.
@@ -190,8 +269,6 @@ async def _send_notification_with_receipt(
     """
     try:
         file_sent = False
-        # Создаем ссылку на чат с клиентом
-        chat_link = f"tg://user?id={user_id}"
 
         # Сначала отправляем фото/документ чека, если он есть
         if receipt_data and receipt_filename:
@@ -203,22 +280,16 @@ async def _send_notification_with_receipt(
             is_pdf = file_extension == ".pdf" or receipt_content_type == "application/pdf"
 
             if is_image:
-                # Отправляем как фото с подписью
                 api_method = "sendPhoto"
                 file_field = "photo"
             elif is_pdf:
-                # Отправляем как документ
                 api_method = "sendDocument"
                 file_field = "document"
             else:
-                # Для других форматов отправляем как документ
                 api_method = "sendDocument"
                 file_field = "document"
 
             api_url = f"https://api.telegram.org/bot{bot_token}/{api_method}"
-
-            # Используем данные из GridFS
-            file_data = receipt_data
 
             # Создаем inline-кнопки для перехода в чат с клиентом
             keyboard = {
@@ -228,11 +299,9 @@ async def _send_notification_with_receipt(
             }
 
             # Отправляем файл с подписью и кнопкой
-            # Используем правильный формат для отправки файла в Telegram Bot API
-            # httpx требует кортеж (filename, file_data) или (filename, file_data, content_type)
-            file_tuple = (receipt_filename or "receipt", file_data)
+            file_tuple = (receipt_filename or "receipt", receipt_data)
             if receipt_content_type:
-                file_tuple = (receipt_filename or "receipt", file_data, receipt_content_type)
+                file_tuple = (receipt_filename or "receipt", receipt_data, receipt_content_type)
 
             files = {file_field: file_tuple}
             data = {
@@ -254,10 +323,6 @@ async def _send_notification_with_receipt(
 
         # Отправляем текстовое сообщение (если файл не отправился или его нет)
         if not file_sent:
-            # Создаем ссылку на чат с клиентом
-            chat_link = f"tg://user?id={user_id}"
-
-            # Создаем inline-кнопки для перехода в чат с клиентом
             keyboard = {
                 "inline_keyboard": [
                     [{"text": "💬 Чат с клиентом", "url": chat_link}],
@@ -289,6 +354,7 @@ async def notify_customer_order_status(
     order_status: str,
     customer_name: str | None = None,
     rejection_reason: str | None = None,
+    delivery_time_slot: str | None = None,
 ) -> None:
     """
     Отправляет уведомление клиенту об изменении статуса заказа.
@@ -299,6 +365,7 @@ async def notify_customer_order_status(
         order_status: Новый статус заказа
         customer_name: Имя клиента (опционально, для персонализации)
         rejection_reason: Причина отказа (если статус "отказано")
+        delivery_time_slot: Временной промежуток доставки (например, "13:00-14:00")
     """
     settings = get_settings()
 
@@ -309,7 +376,10 @@ async def notify_customer_order_status(
     if order_status == "новый":
         status_message = "✅ Ваш заказ успешно оформлен! Мы получили ваш заказ и скоро с вами свяжемся."
     elif order_status == "принят":
-        status_message = "✅ Ваш заказ принят! Мы привезем его в течение часа."
+        if delivery_time_slot:
+            status_message = f"✅ Ваш заказ принят! Доставка будет осуществлена в период *{delivery_time_slot}*."
+        else:
+            status_message = "✅ Ваш заказ принят!"
     elif order_status == "отказано":
         reason_text = f"\n\nПричина: {rejection_reason}" if rejection_reason else ""
         status_message = f"❌ Ваш заказ отклонен по какой-то причине.{reason_text}"

@@ -9,7 +9,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from ..auth import verify_admin
 from ..config import get_settings
 from ..database import get_db
-from ..notifications import notify_customer_order_status
+from ..notifications import notify_admin_order_accepted, notify_customer_order_status
 from ..schemas import OrderStatus
 from ..utils import as_object_id, mark_order_as_deleted
 
@@ -281,7 +281,7 @@ async def handle_bot_webhook(
                 logger.error(f"❌ Не удалось обновить заказ {order_id}")
                 await _answer_callback_query(callback_query_id, "Ошибка при обновлении заказа", show_alert=True)
 
-        # Обрабатываем callback для принятия заказа (старый формат для совместимости)
+        # Обрабатываем callback для принятия заказа - показываем выбор временного промежутка
         elif callback_data.startswith("accept_order_"):
             order_id = callback_data.replace("accept_order_", "")
 
@@ -291,7 +291,54 @@ async def handle_bot_webhook(
                 await _answer_callback_query(callback_query_id, "Заказ не найден", show_alert=True)
                 return {"ok": True}
 
-            # Обновляем статус на "принят"
+            # Проверяем, что заказ еще новый
+            if doc.get("status") != OrderStatus.NEW.value:
+                await _answer_callback_query(callback_query_id, "Заказ уже обработан", show_alert=True)
+                return {"ok": True}
+
+            # Показываем выбор временного промежутка
+            time_slots = [
+                ("13:00-14:00", "С часу до двух"),
+                ("14:00-15:00", "С двух до трёх"),
+                ("15:00-16:00", "С трёх до четырёх"),
+                ("16:00-17:00", "С четырёх до пяти"),
+            ]
+
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": slot_text, "callback_data": f"select_time_{order_id}_{slot_value}"}]
+                    for slot_value, slot_text in time_slots
+                ]
+            }
+
+            # Обновляем сообщение с выбором временного промежутка
+            await _edit_message_text(
+                settings.telegram_bot_token,
+                chat_id,
+                message_id,
+                f"🆕 *Новый заказ!*\n\n📋 Заказ: `{order_id[-6:]}`\n\n⏰ Выберите время доставки:",
+                keyboard,
+            )
+            await _answer_callback_query(callback_query_id, "Выберите время доставки", show_alert=False)
+
+        # Обрабатываем callback для выбора временного промежутка
+        elif callback_data.startswith("select_time_"):
+            # Формат: select_time_{order_id}_{time_slot}
+            parts = callback_data.split("_", 3)
+            if len(parts) != 4:
+                await _answer_callback_query(callback_query_id, "Некорректный формат команды", show_alert=True)
+                return {"ok": True}
+
+            order_id = parts[2]
+            time_slot = parts[3]  # Например, "13:00-14:00"
+
+            # Получаем заказ
+            doc = await db.orders.find_one({"_id": as_object_id(order_id)})
+            if not doc:
+                await _answer_callback_query(callback_query_id, "Заказ не найден", show_alert=True)
+                return {"ok": True}
+
+            # Обновляем статус на "принят" и сохраняем временной промежуток
             from datetime import datetime
 
             updated = await db.orders.find_one_and_update(
@@ -299,6 +346,7 @@ async def handle_bot_webhook(
                 {
                     "$set": {
                         "status": OrderStatus.ACCEPTED.value,
+                        "delivery_time_slot": time_slot,
                         "updated_at": datetime.utcnow(),
                         "can_edit_address": False,
                     }
@@ -307,8 +355,27 @@ async def handle_bot_webhook(
             )
 
             if updated:
-                await _answer_callback_query(callback_query_id, "✅ Заказ принят!", show_alert=False)
+                await _answer_callback_query(callback_query_id, f"✅ Заказ принят! Время: {time_slot}", show_alert=False)
                 await _edit_message_reply_markup(settings.telegram_bot_token, chat_id, message_id, None)
+
+                # Отправляем полное уведомление администратору
+                try:
+                    await notify_admin_order_accepted(
+                        order_id=order_id,
+                        customer_name=updated.get("customer_name", ""),
+                        customer_phone=updated.get("customer_phone", ""),
+                        delivery_address=updated.get("delivery_address", ""),
+                        total_amount=updated.get("total_amount", 0),
+                        items=updated.get("items", []),
+                        user_id=updated.get("user_id", 0),
+                        receipt_file_id=updated.get("payment_receipt_file_id", ""),
+                        delivery_time_slot=time_slot,
+                        db=db,
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке полного уведомления администратору о заказе {order_id}: {e}")
+
+                # Отправляем уведомление клиенту
                 customer_user_id = updated.get("user_id")
                 if customer_user_id:
                     try:
@@ -317,6 +384,7 @@ async def handle_bot_webhook(
                             order_id=order_id,
                             order_status=OrderStatus.ACCEPTED.value,
                             customer_name=updated.get("customer_name"),
+                            delivery_time_slot=time_slot,
                         )
                     except Exception as e:
                         logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
@@ -437,6 +505,30 @@ async def _edit_message_reply_markup(bot_token: str, chat_id: int, message_id: i
             await client.post(f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup", json=data)
     except Exception as e:
         logger.error(f"Ошибка при обновлении сообщения: {e}")
+
+
+async def _edit_message_text(
+    bot_token: str, chat_id: int, message_id: int, text: str, reply_markup: dict | None = None
+):
+    """Обновляет текст и reply_markup сообщения."""
+    try:
+        import json
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            data = {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "parse_mode": "Markdown",
+            }
+            if reply_markup is None:
+                data["reply_markup"] = "{}"
+            else:
+                data["reply_markup"] = json.dumps(reply_markup)
+
+            await client.post(f"https://api.telegram.org/bot{bot_token}/editMessageText", json=data)
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении текста сообщения: {e}")
 
 
 async def _handle_start_command(chat_id: int, user_id: int):
