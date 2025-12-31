@@ -39,7 +39,7 @@ async def notify_admins_new_order(
     total_amount: float,
     items: list,
     user_id: int,
-    receipt_file_id: str,
+    receipt_file_id: str | None,
     db: AsyncIOMotorDatabase,
 ) -> None:
     """
@@ -128,7 +128,7 @@ async def notify_admin_order_accepted(
     total_amount: float,
     items: list,
     user_id: int,
-    receipt_file_id: str,
+    receipt_file_id: str | None,
     delivery_time_slot: str,
     db: AsyncIOMotorDatabase,
 ) -> None:
