@@ -228,46 +228,47 @@ async def update_order_status(
         and old_delivery_time_slot != new_delivery_time_slot
     )
     
-    # Отправляем уведомления если:
-    # 1. Статус изменился
-    # 2. ИЛИ статус "принят" и был добавлен/изменен delivery_time_slot
-    if user_id and (old_status != new_status or delivery_time_slot_changed):
+    # Отправляем уведомления клиенту если статус изменился
+    if user_id and old_status != new_status:
         try:
             rejection_reason = doc.get("rejection_reason") if new_status == OrderStatus.REJECTED.value else None
             delivery_time_slot = doc.get("delivery_time_slot") if new_status == OrderStatus.ACCEPTED.value else None
             
-            # Отправляем уведомление клиенту (только если статус изменился)
-            if old_status != new_status:
-                asyncio.create_task(
-                    notify_customer_order_status(
-                        user_id=user_id,
-                        order_id=order_id,
-                        order_status=new_status,
-                        customer_name=doc.get("customer_name"),
-                        rejection_reason=rejection_reason,
-                        delivery_time_slot=delivery_time_slot,
-                    )
+            asyncio.create_task(
+                notify_customer_order_status(
+                    user_id=user_id,
+                    order_id=order_id,
+                    order_status=new_status,
+                    customer_name=doc.get("customer_name"),
+                    rejection_reason=rejection_reason,
+                    delivery_time_slot=delivery_time_slot,
                 )
-            
-            # Если статус "принят" и есть delivery_time_slot, отправляем полное уведомление админу
-            # Это происходит как при изменении статуса, так и при добавлении/изменении времени доставки
-            if new_status == OrderStatus.ACCEPTED.value and new_delivery_time_slot:
-                asyncio.create_task(
-                    notify_admin_order_accepted(
-                        order_id=order_id,
-                        customer_name=doc.get("customer_name"),
-                        customer_phone=doc.get("customer_phone"),
-                        delivery_address=doc.get("delivery_address"),
-                        total_amount=doc.get("total_amount", 0),
-                        items=doc.get("items", []),
-                        user_id=user_id,
-                        receipt_file_id=doc.get("payment_receipt_file_id"),
-                        delivery_time_slot=new_delivery_time_slot,
-                        db=db,
-                    )
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
+    
+    # Отправляем полное уведомление админу если:
+    # 1. Статус "принят" и есть delivery_time_slot (при изменении статуса или установке времени)
+    # 2. Это происходит независимо от наличия user_id (админу нужно уведомление в любом случае)
+    if new_status == OrderStatus.ACCEPTED.value and new_delivery_time_slot:
+        try:
+            asyncio.create_task(
+                notify_admin_order_accepted(
+                    order_id=order_id,
+                    customer_name=doc.get("customer_name", ""),
+                    customer_phone=doc.get("customer_phone", ""),
+                    delivery_address=doc.get("delivery_address", ""),
+                    total_amount=doc.get("total_amount", 0),
+                    items=doc.get("items", []),
+                    user_id=user_id or 0,  # Может быть None, но функция принимает int
+                    receipt_file_id=doc.get("payment_receipt_file_id"),
+                    delivery_time_slot=new_delivery_time_slot,
+                    db=db,
                 )
-        except Exception:
-            pass  # Игнорируем ошибки уведомлений
+            )
+            logger.info(f"Отправлено уведомление админу о заказе {order_id} с временем доставки {new_delivery_time_slot}")
+        except Exception as e:
+            logger.error(f"Ошибка при отправке уведомления админу о заказе {order_id}: {e}")
 
     return order_payload
 

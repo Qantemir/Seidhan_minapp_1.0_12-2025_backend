@@ -59,7 +59,12 @@ async def notify_admins_new_order(
     settings = get_settings()
 
     # Быстрая проверка настроек
-    if not settings.telegram_bot_token or not settings.admin_ids:
+    if not settings.telegram_bot_token:
+        logger.warning(f"TELEGRAM_BOT_TOKEN не настроен, уведомление о новом заказе {order_id} не отправлено")
+        return
+    
+    if not settings.admin_ids:
+        logger.warning(f"ADMIN_IDS не настроен, уведомление о новом заказе {order_id} не отправлено")
         return
 
     # Простое сообщение без деталей
@@ -80,7 +85,15 @@ async def notify_admins_new_order(
             )
 
         # Выполняем все отправки параллельно
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Логируем результаты
+        success_count = sum(1 for r in results if r is True)
+        failed_count = len(results) - success_count
+        if success_count > 0:
+            logger.info(f"Уведомление о новом заказе {order_id} отправлено {success_count} админам")
+        if failed_count > 0:
+            logger.error(f"Не удалось отправить уведомление о новом заказе {order_id} {failed_count} админам")
 
 
 async def _send_simple_notification(
@@ -144,7 +157,12 @@ async def notify_admin_order_accepted(
     settings = get_settings()
 
     # Быстрая проверка настроек
-    if not settings.telegram_bot_token or not settings.admin_ids:
+    if not settings.telegram_bot_token:
+        logger.warning(f"TELEGRAM_BOT_TOKEN не настроен, уведомление о принятом заказе {order_id} не отправлено")
+        return
+    
+    if not settings.admin_ids:
+        logger.warning(f"ADMIN_IDS не настроен, уведомление о принятом заказе {order_id} не отправлено")
         return
 
     # Получаем информацию о товарах с вкусами из базы данных
@@ -221,8 +239,8 @@ async def notify_admin_order_accepted(
         except Exception:
             receipt_data = None
 
-    # Создаем ссылку на чат с клиентом
-    chat_link = f"tg://user?id={user_id}"
+    # Создаем ссылку на чат с клиентом (только если user_id валидный)
+    chat_link = f"tg://user?id={user_id}" if user_id and user_id > 0 else None
 
     # Отправляем уведомление каждому администратору
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -242,7 +260,15 @@ async def notify_admin_order_accepted(
             )
 
         # Выполняем все отправки параллельно
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Логируем результаты
+        success_count = sum(1 for r in results if r is True)
+        failed_count = len(results) - success_count
+        if success_count > 0:
+            logger.info(f"Полное уведомление о принятом заказе {order_id} (время: {delivery_time_slot}) отправлено {success_count} админам")
+        if failed_count > 0:
+            logger.error(f"Не удалось отправить полное уведомление о принятом заказе {order_id} {failed_count} админам")
 
 
 async def _send_notification_with_receipt(
@@ -253,7 +279,7 @@ async def _send_notification_with_receipt(
     receipt_data: bytes | None,
     receipt_filename: str | None,
     receipt_content_type: str | None,
-    chat_link: str,
+    chat_link: str | None,
 ) -> bool:
     """
     Отправляет уведомление администратору с фото чека.
@@ -285,12 +311,14 @@ async def _send_notification_with_receipt(
 
             api_url = f"https://api.telegram.org/bot{bot_token}/{api_method}"
 
-            # Создаем inline-кнопки для перехода в чат с клиентом
-            keyboard = {
-                "inline_keyboard": [
-                    [{"text": "💬 Чат с клиентом", "url": chat_link}],
-                ]
-            }
+            # Создаем inline-кнопки для перехода в чат с клиентом (только если есть валидная ссылка)
+            keyboard = None
+            if chat_link:
+                keyboard = {
+                    "inline_keyboard": [
+                        [{"text": "💬 Чат с клиентом", "url": chat_link}],
+                    ]
+                }
 
             # Отправляем файл с подписью и кнопкой
             file_tuple = (receipt_filename or "receipt", receipt_data)
@@ -302,38 +330,54 @@ async def _send_notification_with_receipt(
                 "chat_id": str(admin_id),
                 "caption": message,
                 "parse_mode": "Markdown",
-                "reply_markup": json.dumps(keyboard),
             }
+            if keyboard:
+                data["reply_markup"] = json.dumps(keyboard)
 
             try:
                 response = await client.post(api_url, data=data, files=files, timeout=30.0)
+                response.raise_for_status()  # Вызовет исключение для HTTP ошибок
                 result = response.json()
 
                 if result.get("ok"):
                     file_sent = True
                     return True
-            except Exception:
+                else:
+                    error_desc = result.get("description", "Unknown error")
+                    logger.warning(f"Telegram API вернул ошибку при отправке файла администратору {admin_id}: {error_desc}")
+                    file_sent = False
+            except httpx.HTTPStatusError as e:
+                logger.exception(f"HTTP ошибка при отправке файла администратору {admin_id}: {e.response.status_code} - {e.response.text}", exc_info=e)
+                file_sent = False
+            except Exception as e:
+                logger.exception(f"Исключение при отправке файла администратору {admin_id}", exc_info=e)
                 file_sent = False
 
         # Отправляем текстовое сообщение (если файл не отправился или его нет)
         if not file_sent:
-            keyboard = {
-                "inline_keyboard": [
-                    [{"text": "💬 Чат с клиентом", "url": chat_link}],
-                ]
-            }
+            keyboard = None
+            if chat_link:
+                keyboard = {
+                    "inline_keyboard": [
+                        [{"text": "💬 Чат с клиентом", "url": chat_link}],
+                    ]
+                }
 
             api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            response = await client.post(
-                api_url,
-                json={
-                    "chat_id": admin_id,
-                    "text": message,
-                    "parse_mode": "Markdown",
-                    "reply_markup": keyboard,
-                },
-            )
-            if not response.json().get("ok"):
+            payload = {
+                "chat_id": admin_id,
+                "text": message,
+                "parse_mode": "Markdown",
+            }
+            if keyboard:
+                payload["reply_markup"] = keyboard
+            
+            response = await client.post(api_url, json=payload)
+            response.raise_for_status()  # Вызовет исключение для HTTP ошибок
+            result = response.json()
+            if not result.get("ok"):
+                error_desc = result.get("description", "Unknown error")
+                logger.warning(f"Telegram API вернул ошибку при отправке сообщения администратору {admin_id}: {error_desc}")
                 return False
 
         return True

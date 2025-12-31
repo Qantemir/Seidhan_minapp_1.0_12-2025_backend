@@ -18,6 +18,12 @@ router = APIRouter(tags=["bot"])
 logger = logging.getLogger(__name__)
 
 
+@router.get("/bot/webhook/test")
+async def test_webhook_route():
+    """Test endpoint to verify webhook route is accessible."""
+    return {"ok": True, "message": "Webhook route is accessible", "path": "/api/bot/webhook"}
+
+
 @router.get("/bot/webhook/status")
 async def get_webhook_status():
     """Проверяет статус webhook в Telegram Bot API."""
@@ -98,14 +104,32 @@ async def setup_webhook(request: Request):
         raise HTTPException(status_code=500, detail=f"Ошибка при настройке webhook: {str(e)}")
 
 
+@router.options("/bot/webhook")
+async def options_bot_webhook():
+    """Handle CORS preflight requests for webhook endpoint."""
+    return {"ok": True}
+
+
 @router.post("/bot/webhook")
 async def handle_bot_webhook(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     """Обрабатывает webhook от Telegram Bot API (callback от inline-кнопок и команды)."""
+    logger.info(
+        f"Webhook received: method={request.method}, path={request.url.path}, "
+        f"client={request.client.host if request.client else 'unknown'}"
+    )
     try:
-        data = await request.json()
+        # Try to get JSON data
+        try:
+            data = await request.json()
+        except Exception as json_error:
+            logger.error(f"Failed to parse JSON from webhook: {json_error}")
+            # Return ok to Telegram even if JSON parsing fails
+            return {"ok": True, "error": "Invalid JSON"}
+        
+        logger.debug(f"Webhook data: {data}")
 
         # Обрабатываем команду /start
         if isinstance(data, dict) and "message" in data:
