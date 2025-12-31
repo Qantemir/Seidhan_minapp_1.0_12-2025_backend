@@ -233,9 +233,6 @@ async def notify_admin_order_accepted(
         except Exception:
             receipt_data = None
 
-    # Создаем ссылку на чат с клиентом (только если user_id валидный)
-    chat_link = f"tg://user?id={user_id}" if user_id and user_id > 0 else None
-
     # Отправляем уведомление каждому администратору
     async with httpx.AsyncClient(timeout=30.0) as client:
         tasks = []
@@ -249,7 +246,6 @@ async def notify_admin_order_accepted(
                     receipt_data,
                     receipt_filename,
                     receipt_content_type,
-                    chat_link,
                 )
             )
 
@@ -271,7 +267,6 @@ async def _send_notification_with_receipt(
     receipt_data: bytes | None,
     receipt_filename: str | None,
     receipt_content_type: str | None,
-    chat_link: str | None,
 ) -> bool:
     """
     Отправляет уведомление администратору с фото чека.
@@ -303,16 +298,7 @@ async def _send_notification_with_receipt(
 
             api_url = f"https://api.telegram.org/bot{bot_token}/{api_method}"
 
-            # Создаем inline-кнопки для перехода в чат с клиентом (только если есть валидная ссылка)
-            keyboard = None
-            if chat_link:
-                keyboard = {
-                    "inline_keyboard": [
-                        [{"text": "💬 Чат с клиентом", "url": chat_link}],
-                    ]
-                }
-
-            # Отправляем файл с подписью и кнопкой
+            # Отправляем файл с подписью (без кнопок)
             file_tuple = (receipt_filename or "receipt", receipt_data)
             if receipt_content_type:
                 file_tuple = (receipt_filename or "receipt", receipt_data, receipt_content_type)
@@ -323,8 +309,6 @@ async def _send_notification_with_receipt(
                 "caption": message,
                 "parse_mode": "Markdown",
             }
-            if keyboard:
-                data["reply_markup"] = json.dumps(keyboard)
 
             try:
                 response = await client.post(api_url, data=data, files=files, timeout=30.0)
@@ -346,22 +330,12 @@ async def _send_notification_with_receipt(
 
         # Отправляем текстовое сообщение (если файл не отправился или его нет)
         if not file_sent:
-            keyboard = None
-            if chat_link:
-                keyboard = {
-                    "inline_keyboard": [
-                        [{"text": "💬 Чат с клиентом", "url": chat_link}],
-                    ]
-                }
-
             api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
             payload = {
                 "chat_id": admin_id,
                 "text": message,
                 "parse_mode": "Markdown",
             }
-            if keyboard:
-                payload["reply_markup"] = keyboard
             
             response = await client.post(api_url, json=payload)
             response.raise_for_status()  # Вызовет исключение для HTTP ошибок
