@@ -189,7 +189,8 @@ async def notify_admin_order_accepted(
 
     # Формируем текст сообщения
     items_total = sum((item.get("price", 0) or 0) * (item.get("quantity", 0) or 0) for item in items)
-    delivery_fee = 1000
+    # Вычисляем delivery_fee как разницу между total_amount и items_total
+    delivery_fee = total_amount - items_total
     message = (
         f"✅ *Заказ принят!*\n\n"
         f"📋 Заказ: `{order_id[-6:]}`\n"
