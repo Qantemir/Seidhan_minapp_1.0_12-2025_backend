@@ -247,6 +247,7 @@ async def create_order(
         order_id=order.id,
         order_status="новый",
         customer_name=name,
+        db=db,
     )
 
     return order

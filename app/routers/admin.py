@@ -288,6 +288,7 @@ async def update_order_status(
                         customer_name=doc.get("customer_name"),
                         rejection_reason=rejection_reason,
                         delivery_time_slot=delivery_time_slot,
+                        db=db,
                     )
                 )
             except Exception as e:
@@ -375,19 +376,19 @@ async def quick_accept_order(
     if not updated:
         raise HTTPException(status_code=404, detail="Заказ не найден")
 
-    # Отправляем уведомление клиенту об изменении статуса
+    # Отправляем уведомление клиенту об изменении статуса (неблокирующе)
     user_id = updated.get("user_id")
     if user_id and old_status != OrderStatus.ACCEPTED.value:
-        try:
-            await notify_customer_order_status(
+        asyncio.create_task(
+            notify_customer_order_status(
                 user_id=user_id,
                 order_id=order_id,
                 order_status=OrderStatus.ACCEPTED.value,
                 customer_name=updated.get("customer_name"),
                 rejection_reason=None,
+                db=db,
             )
-        except Exception as e:
-            logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
+        )
 
     return Order(**serialize_doc(updated) | {"id": str(updated["_id"])})
 

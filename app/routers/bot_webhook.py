@@ -1,5 +1,6 @@
 """Webhook для обработки callback от Telegram Bot API (кнопки в сообщениях)."""
 
+import asyncio
 import logging
 
 import httpx
@@ -277,20 +278,20 @@ async def handle_bot_webhook(
                     settings.telegram_bot_token, chat_id, message_id, None  # Убираем кнопки после изменения статуса
                 )
 
-                # Отправляем уведомление клиенту об изменении статуса
+                # Отправляем уведомление клиенту об изменении статуса (неблокирующе)
                 customer_user_id = updated.get("user_id")
                 if customer_user_id and old_status != new_status_value:
-                    try:
-                        rejection_reason = updated.get("rejection_reason") if new_status_value == OrderStatus.REJECTED.value else None
-                        await notify_customer_order_status(
+                    rejection_reason = updated.get("rejection_reason") if new_status_value == OrderStatus.REJECTED.value else None
+                    asyncio.create_task(
+                        notify_customer_order_status(
                             user_id=customer_user_id,
                             order_id=order_id,
                             order_status=new_status_value,
                             customer_name=updated.get("customer_name"),
                             rejection_reason=rejection_reason,
+                            db=db,
                         )
-                    except Exception as e:
-                        logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
+                    )
             else:
                 logger.error(f"❌ Не удалось обновить заказ {order_id}")
                 await _answer_callback_query(callback_query_id, "Ошибка при обновлении заказа", show_alert=True)
@@ -389,19 +390,19 @@ async def handle_bot_webhook(
                 except Exception as e:
                     logger.error(f"Ошибка при отправке полного уведомления администратору о заказе {order_id}: {e}")
 
-                # Отправляем уведомление клиенту
+                # Отправляем уведомление клиенту (неблокирующе)
                 customer_user_id = updated.get("user_id")
                 if customer_user_id:
-                    try:
-                        await notify_customer_order_status(
+                    asyncio.create_task(
+                        notify_customer_order_status(
                             user_id=customer_user_id,
                             order_id=order_id,
                             order_status=OrderStatus.ACCEPTED.value,
                             customer_name=updated.get("customer_name"),
                             delivery_time_slot=time_slot,
+                            db=db,
                         )
-                    except Exception as e:
-                        logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
+                    )
             else:
                 await _answer_callback_query(callback_query_id, "Ошибка при обновлении заказа", show_alert=True)
 
@@ -449,19 +450,19 @@ async def handle_bot_webhook(
                     settings.telegram_bot_token, chat_id, message_id, None  # Убираем кнопки
                 )
 
-                # Отправляем уведомление клиенту об изменении статуса
+                # Отправляем уведомление клиенту об изменении статуса (неблокирующе)
                 customer_user_id = updated.get("user_id")
                 if customer_user_id:
-                    try:
-                        await notify_customer_order_status(
+                    asyncio.create_task(
+                        notify_customer_order_status(
                             user_id=customer_user_id,
                             order_id=order_id,
                             order_status=OrderStatus.REJECTED.value,
                             customer_name=updated.get("customer_name"),
                             rejection_reason=updated.get("rejection_reason"),
+                            db=db,
                         )
-                    except Exception as e:
-                        logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
+                    )
             else:
                 await _answer_callback_query(callback_query_id, "Ошибка при обновлении заказа", show_alert=True)
         else:

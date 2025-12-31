@@ -102,7 +102,32 @@ docker run -p 8000:8000 --env-file .env backend-api
 - `PATCH /api/admin/store/payment-link` - Установить ссылку на оплату
 
 ### Telegram Bot
-- `POST /api/bot/webhook` - Webhook для Telegram
+- `POST /api/bot/webhook` - Webhook для Telegram (обрабатывает callback от кнопок и команды)
+- `GET /api/bot/webhook/status` - Проверить статус webhook в Telegram
+- `POST /api/bot/webhook/setup` - Настроить webhook вручную
+
+## Настройка Webhook
+
+Webhook необходим для обработки нажатий на кнопки в Telegram и команд бота.
+
+### Быстрая настройка (рекомендуется)
+
+1. **В Railway Dashboard:**
+   - Откройте настройки бэкенда → Variables
+   - Добавьте переменную `PUBLIC_URL` со значением публичного URL бэкенда
+   - Пример: `https://your-backend-production.up.railway.app`
+   - Бэкенд автоматически настроит webhook при запуске
+
+2. **Проверка:**
+   ```bash
+   curl https://your-backend-production.up.railway.app/api/bot/webhook/status
+   ```
+
+### Альтернативные способы
+
+- **Через API:** `POST /api/bot/webhook/setup` с телом `{"url": "https://your-backend-url"}`
+- **Через скрипт:** `python setup_webhook.py --backend-url https://your-backend-url`
+- **Подробная инструкция:** см. [WEBHOOK_SETUP.md](./WEBHOOK_SETUP.md)
 
 ## Переменные окружения
 

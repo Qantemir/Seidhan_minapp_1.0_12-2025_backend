@@ -382,6 +382,7 @@ async def notify_customer_order_status(
     customer_name: str | None = None,
     rejection_reason: str | None = None,
     delivery_time_slot: str | None = None,
+    db: AsyncIOMotorDatabase | None = None,
 ) -> None:
     """
     Отправляет уведомление клиенту об изменении статуса заказа.
@@ -430,6 +431,68 @@ async def notify_customer_order_status(
             )
             result = response.json()
             if not result.get("ok"):
-                logger.error(f"Ошибка при отправке уведомления клиенту: {result.get('description', 'Unknown error')}, user_id={user_id}, order_id={order_id}")
+                error_code = result.get("error_code")
+                error_description = result.get("description", "Unknown error")
+                
+                # Определяем тип ошибки для более информативного логирования
+                error_description_lower = error_description.lower()
+                is_invalid_user = any(phrase in error_description_lower for phrase in [
+                    "chat not found", "user not found", "receiver not found",
+                    "chat_id is empty", "peer_id_invalid"
+                ])
+                is_blocked = any(phrase in error_description_lower for phrase in [
+                    "blocked", "bot blocked", "bot was blocked", "user is deactivated"
+                ])
+                
+                if is_invalid_user:
+                    error_type = "невалидный пользователь"
+                elif is_blocked:
+                    error_type = "пользователь заблокировал бота"
+                elif error_code == 429:
+                    error_type = "rate limit (слишком много запросов)"
+                elif error_code == 400:
+                    error_type = "неверный запрос"
+                elif error_code == 403:
+                    error_type = "доступ запрещен"
+                else:
+                    error_type = "неизвестная ошибка"
+                
+                logger.warning(
+                    f"Ошибка при отправке уведомления клиенту ({error_type}): {error_description}, "
+                    f"error_code={error_code}, user_id={user_id}, order_id={order_id}, "
+                    f"status={order_status}"
+                )
+                
+                # Удаляем невалидных пользователей из базы (если пользователь заблокировал бота или невалиден)
+                if db and (is_invalid_user or is_blocked):
+                    try:
+                        result = await db.customers.delete_one({"telegram_id": user_id})
+                        if result.deleted_count > 0:
+                            logger.info(
+                                f"Удален невалидный пользователь из базы: user_id={user_id}, "
+                                f"reason={error_type}, order_id={order_id}"
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"Ошибка при удалении невалидного пользователя из базы: user_id={user_id}, "
+                            f"order_id={order_id}, error={e}"
+                        )
+    except httpx.TimeoutException as e:
+        logger.error(
+            f"Таймаут при отправке уведомления клиенту: user_id={user_id}, order_id={order_id}, "
+            f"status={order_status}, timeout=10.0s",
+            exc_info=True
+        )
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"HTTP ошибка при отправке уведомления клиенту: status_code={e.response.status_code}, "
+            f"user_id={user_id}, order_id={order_id}, status={order_status}, "
+            f"response_text={e.response.text[:200]}",
+            exc_info=True
+        )
     except Exception as e:
-        logger.error(f"Исключение при отправке уведомления клиенту: {e}, user_id={user_id}, order_id={order_id}")
+        logger.error(
+            f"Исключение при отправке уведомления клиенту: {type(e).__name__}: {str(e)}, "
+            f"user_id={user_id}, order_id={order_id}, status={order_status}",
+            exc_info=True
+        )
