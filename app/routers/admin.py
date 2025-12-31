@@ -13,7 +13,7 @@ from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 from ..auth import verify_admin
 from ..config import get_settings
 from ..database import get_db
-from ..notifications import notify_customer_order_status
+from ..notifications import notify_customer_order_status, notify_admin_order_accepted
 from ..schemas import (
     BroadcastRequest,
     BroadcastResponse,
@@ -191,9 +191,19 @@ async def update_order_status(
     # Если статус "отказано", сохраняем причину отказа
     if new_status == OrderStatus.REJECTED.value:
         update_operations["$set"]["rejection_reason"] = payload.rejection_reason
+        # Убираем delivery_time_slot при отказе
+        if "$unset" not in update_operations:
+            update_operations["$unset"] = {}
+        update_operations["$unset"]["delivery_time_slot"] = ""
     else:
         # Если статус меняется с "отказано" на другой, убираем причину отказа
-        update_operations["$unset"] = {"rejection_reason": ""}
+        if "$unset" not in update_operations:
+            update_operations["$unset"] = {}
+        update_operations["$unset"]["rejection_reason"] = ""
+        
+        # Если статус "принят" и указан delivery_time_slot, сохраняем его
+        if new_status == OrderStatus.ACCEPTED.value and payload.delivery_time_slot:
+            update_operations["$set"]["delivery_time_slot"] = payload.delivery_time_slot
 
     # Атомарно обновляем заказ - только один раз, без дополнительных операций
     doc = await db.orders.find_one_and_update(
@@ -206,11 +216,14 @@ async def update_order_status(
 
     order_payload = Order(**serialize_doc(doc) | {"id": str(doc["_id"])})
 
-    # Отправляем уведомление клиенту об изменении статуса (fire-and-forget для скорости)
+    # Отправляем уведомления (fire-and-forget для скорости)
     user_id = doc.get("user_id")
     if user_id and old_status != new_status:
         try:
             rejection_reason = doc.get("rejection_reason") if new_status == OrderStatus.REJECTED.value else None
+            delivery_time_slot = doc.get("delivery_time_slot") if new_status == OrderStatus.ACCEPTED.value else None
+            
+            # Отправляем уведомление клиенту
             asyncio.create_task(
                 notify_customer_order_status(
                     user_id=user_id,
@@ -218,8 +231,26 @@ async def update_order_status(
                     order_status=new_status,
                     customer_name=doc.get("customer_name"),
                     rejection_reason=rejection_reason,
+                    delivery_time_slot=delivery_time_slot,
                 )
             )
+            
+            # Если статус "принят", отправляем уведомление админу с полной информацией
+            if new_status == OrderStatus.ACCEPTED.value and delivery_time_slot:
+                asyncio.create_task(
+                    notify_admin_order_accepted(
+                        order_id=order_id,
+                        customer_name=doc.get("customer_name"),
+                        customer_phone=doc.get("customer_phone"),
+                        delivery_address=doc.get("delivery_address"),
+                        total_amount=doc.get("total_amount", 0),
+                        items=doc.get("items", []),
+                        user_id=user_id,
+                        receipt_file_id=doc.get("payment_receipt_file_id"),
+                        delivery_time_slot=delivery_time_slot,
+                        db=db,
+                    )
+                )
         except Exception:
             pass  # Игнорируем ошибки уведомлений
 

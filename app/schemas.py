@@ -221,6 +221,7 @@ class Order(BaseModel):
     payment_receipt_filename: Optional[str] = None
     delivery_type: Optional[str] = None
     payment_type: Optional[str] = None
+    delivery_time_slot: Optional[str] = None  # Временной промежуток доставки (например, "13:00-14:00")
 
     class Config:
         """Конфигурация Pydantic."""
@@ -249,6 +250,7 @@ class UpdateStatusRequest(BaseModel):
 
     status: OrderStatus
     rejection_reason: Optional[str] = None  # Причина отказа (обязательна для статуса "отказано")
+    delivery_time_slot: Optional[str] = None  # Временной промежуток доставки (например, "13:00-14:00")
 
 
 class BroadcastRequest(BaseModel):
