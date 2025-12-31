@@ -218,25 +218,40 @@ async def update_order_status(
 
     # Отправляем уведомления (fire-and-forget для скорости)
     user_id = doc.get("user_id")
-    if user_id and old_status != new_status:
+    
+    # Проверяем, был ли добавлен или изменен delivery_time_slot
+    old_delivery_time_slot = old_doc.get("delivery_time_slot")
+    new_delivery_time_slot = doc.get("delivery_time_slot")
+    delivery_time_slot_changed = (
+        new_status == OrderStatus.ACCEPTED.value 
+        and new_delivery_time_slot 
+        and old_delivery_time_slot != new_delivery_time_slot
+    )
+    
+    # Отправляем уведомления если:
+    # 1. Статус изменился
+    # 2. ИЛИ статус "принят" и был добавлен/изменен delivery_time_slot
+    if user_id and (old_status != new_status or delivery_time_slot_changed):
         try:
             rejection_reason = doc.get("rejection_reason") if new_status == OrderStatus.REJECTED.value else None
             delivery_time_slot = doc.get("delivery_time_slot") if new_status == OrderStatus.ACCEPTED.value else None
             
-            # Отправляем уведомление клиенту
-            asyncio.create_task(
-                notify_customer_order_status(
-                    user_id=user_id,
-                    order_id=order_id,
-                    order_status=new_status,
-                    customer_name=doc.get("customer_name"),
-                    rejection_reason=rejection_reason,
-                    delivery_time_slot=delivery_time_slot,
+            # Отправляем уведомление клиенту (только если статус изменился)
+            if old_status != new_status:
+                asyncio.create_task(
+                    notify_customer_order_status(
+                        user_id=user_id,
+                        order_id=order_id,
+                        order_status=new_status,
+                        customer_name=doc.get("customer_name"),
+                        rejection_reason=rejection_reason,
+                        delivery_time_slot=delivery_time_slot,
+                    )
                 )
-            )
             
-            # Если статус "принят", отправляем уведомление админу с полной информацией
-            if new_status == OrderStatus.ACCEPTED.value and delivery_time_slot:
+            # Если статус "принят" и есть delivery_time_slot, отправляем полное уведомление админу
+            # Это происходит как при изменении статуса, так и при добавлении/изменении времени доставки
+            if new_status == OrderStatus.ACCEPTED.value and new_delivery_time_slot:
                 asyncio.create_task(
                     notify_admin_order_accepted(
                         order_id=order_id,
@@ -247,7 +262,7 @@ async def update_order_status(
                         items=doc.get("items", []),
                         user_id=user_id,
                         receipt_file_id=doc.get("payment_receipt_file_id"),
-                        delivery_time_slot=delivery_time_slot,
+                        delivery_time_slot=new_delivery_time_slot,
                         db=db,
                     )
                 )

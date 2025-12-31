@@ -368,7 +368,7 @@ async def notify_customer_order_status(
 
     # Формируем сообщение в зависимости от статуса
     if order_status == "новый":
-        status_message = "✅ Ваш заказ успешно оформлен! Мы получили ваш заказ и скоро с вами свяжемся."
+        status_message = "✅ Ваш заказ получен. Вы получите уведомление о времени доставки."
     elif order_status == "принят":
         if delivery_time_slot:
             status_message = f"✅ Ваш заказ принят! Доставка будет осуществлена в период *{delivery_time_slot}*."

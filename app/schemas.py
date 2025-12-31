@@ -301,6 +301,7 @@ class OrderSummary(BaseModel):
     total_amount: float
     created_at: datetime = Field(default_factory=datetime.utcnow)
     items_count: int = Field(..., description="Количество товаров в заказе")
+    delivery_time_slot: Optional[str] = None  # Временной промежуток доставки (например, "13:00-14:00")
 
     class Config:
         """Конфигурация Pydantic."""
