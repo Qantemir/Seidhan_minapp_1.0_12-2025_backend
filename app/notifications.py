@@ -43,7 +43,7 @@ async def notify_admins_new_order(
     db: AsyncIOMotorDatabase,
 ) -> None:
     """
-    Отправляет простое уведомление всем администраторам о новом заказе с кнопкой "Принять заказ".
+    Отправляет простое уведомление всем администраторам о новом заказе.
 
     Args:
         order_id: ID заказа
@@ -53,7 +53,7 @@ async def notify_admins_new_order(
         total_amount: Общая сумма заказа
         items: Список товаров в заказе
         user_id: Telegram ID клиента
-        receipt_file_id: ID файла чека в GridFS
+        receipt_file_id: ID файла чека в GridFS (может быть None)
         db: База данных для доступа к GridFS
     """
     settings = get_settings()
@@ -65,14 +65,7 @@ async def notify_admins_new_order(
     # Простое сообщение без деталей
     message = f"🆕 *Новый заказ!*\n\n📋 Заказ: `{order_id[-6:]}`"
 
-    # Создаем кнопку "Принять заказ"
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": "✅ Принять заказ", "callback_data": f"accept_order_{order_id}"}],
-        ]
-    }
-
-    # Отправляем уведомление каждому администратору
+    # Отправляем уведомление каждому администратору без кнопок
     async with httpx.AsyncClient(timeout=30.0) as client:
         tasks = []
         for admin_id in settings.admin_ids:
@@ -82,7 +75,7 @@ async def notify_admins_new_order(
                     settings.telegram_bot_token,
                     admin_id,
                     message,
-                    keyboard,
+                    None,  # Без кнопок
                 )
             )
 
@@ -95,7 +88,7 @@ async def _send_simple_notification(
     bot_token: str,
     admin_id: int,
     message: str,
-    keyboard: dict,
+    keyboard: dict | None,
 ) -> bool:
     """
     Отправляет простое текстовое уведомление администратору.
@@ -105,15 +98,15 @@ async def _send_simple_notification(
     """
     try:
         api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        response = await client.post(
-            api_url,
-            json={
-                "chat_id": admin_id,
-                "text": message,
-                "parse_mode": "Markdown",
-                "reply_markup": keyboard,
-            },
-        )
+        payload = {
+            "chat_id": admin_id,
+            "text": message,
+            "parse_mode": "Markdown",
+        }
+        if keyboard:
+            payload["reply_markup"] = keyboard
+        
+        response = await client.post(api_url, json=payload)
         return response.json().get("ok", False)
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомления администратору {admin_id}: {e}")
