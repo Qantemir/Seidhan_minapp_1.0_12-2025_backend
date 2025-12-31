@@ -140,7 +140,7 @@ async def create_order(
     comment: str | None = Form(None),
     delivery_type: str | None = Form(None),
     payment_type: str | None = Form(None),
-    payment_receipt: UploadFile = File(...),
+    payment_receipt: UploadFile | None = File(None),
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user: TelegramUser = Depends(get_current_user),
 ):
