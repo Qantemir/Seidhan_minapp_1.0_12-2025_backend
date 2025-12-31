@@ -311,13 +311,11 @@ async def restore_variant_quantity(
         )
         
         if not product:
-            logger.warning(f"Товар {product_id} или вариант {variant_id} не найден при восстановлении количества")
             return
         
         # Находим вариант и получаем текущее количество
         variant = next((v for v in product.get("variants", []) if v.get("id") == variant_id), None)
         if not variant:
-            logger.warning(f"Вариант {variant_id} не найден в товаре {product_id}")
             return
         
         current_quantity = variant.get("quantity", 0)
@@ -441,7 +439,6 @@ async def permanently_delete_order_entry(
     try:
         order_oid = as_object_id(order_id)
         await db.orders.delete_one({"_id": order_oid})
-        logger.info(f"Заказ {order_id} окончательно удален")
     except Exception as e:
         logger.error(f"Ошибка при окончательном удалении заказа {order_id}: {e}")
 
@@ -511,17 +508,7 @@ def compress_image_bytes(
         
         # Если сжатие не дало результата (файл стал больше), возвращаем оригинал
         if len(compressed_bytes) >= len(image_bytes):
-            logger.debug(f"Сжатие не уменьшило размер изображения, возвращаем оригинал")
             return image_bytes
-        
-        # Логируем результат сжатия
-        original_size = len(image_bytes)
-        compressed_size = len(compressed_bytes)
-        reduction = ((original_size - compressed_size) / original_size) * 100 if original_size > 0 else 0
-        logger.info(
-            f"Изображение сжато: {original_size} → {compressed_size} байт "
-            f"({reduction:.1f}% уменьшение)"
-        )
         
         return compressed_bytes
     except Exception as e:
@@ -798,11 +785,10 @@ async def delete_product_images_from_gridfs(
     if product_doc.get("image"):
         image_id = product_doc["image"]
         # Проверяем, что это не base64 строка (старые данные)
-        if isinstance(image_id, str) and not image_id.startswith("data:image") and ObjectId.is_valid(image_id):
-            try:
-                await loop.run_in_executor(None, _delete_gridfs_file, image_id)
-                logger.debug(f"Удалено основное изображение товара: {image_id}")
-            except Exception as e:
+            if isinstance(image_id, str) and not image_id.startswith("data:image") and ObjectId.is_valid(image_id):
+                try:
+                    await loop.run_in_executor(None, _delete_gridfs_file, image_id)
+                except Exception as e:
                 logger.error(f"Ошибка при удалении основного изображения товара {image_id}: {e}")
     
     # Удаляем дополнительные изображения
@@ -812,6 +798,5 @@ async def delete_product_images_from_gridfs(
             if isinstance(image_id, str) and not image_id.startswith("data:image") and ObjectId.is_valid(image_id):
                 try:
                     await loop.run_in_executor(None, _delete_gridfs_file, image_id)
-                    logger.debug(f"Удалено дополнительное изображение товара: {image_id}")
                 except Exception as e:
                     logger.error(f"Ошибка при удалении дополнительного изображения товара {image_id}: {e}")

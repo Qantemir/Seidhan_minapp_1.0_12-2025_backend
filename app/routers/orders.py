@@ -97,9 +97,9 @@ async def _save_payment_receipt(db: AsyncIOMotorDatabase, file: UploadFile) -> t
                 85,    # quality
                 format
             )
-        except Exception as e:
+        except Exception:
             # В случае ошибки сжатия продолжаем с оригинальным файлом
-            logger.warning(f"Не удалось сжать изображение чека: {e}")
+            pass
 
     # Сохраняем в GridFS используя синхронный клиент
     # Выполняем в executor, чтобы не блокировать event loop
@@ -138,8 +138,6 @@ async def create_order(
     phone: str = Form(...),
     address: str = Form(...),
     comment: str | None = Form(None),
-    delivery_type: str | None = Form(None),
-    payment_type: str | None = Form(None),
     payment_receipt: UploadFile | None = File(None),
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user: TelegramUser = Depends(get_current_user),
@@ -198,8 +196,6 @@ async def create_order(
         "updated_at": datetime.utcnow(),
         "payment_receipt_file_id": receipt_file_id,  # ID файла в GridFS (может быть None)
         "payment_receipt_filename": original_filename,  # Может быть None
-        "delivery_type": delivery_type,
-        "payment_type": payment_type,
     }
 
     try:

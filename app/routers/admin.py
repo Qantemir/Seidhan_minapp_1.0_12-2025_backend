@@ -1,6 +1,7 @@
 """Admin router for managing orders and broadcasting messages."""
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import List, Optional
 
@@ -30,6 +31,8 @@ from ..utils import (
     restore_variant_quantity,
     serialize_doc,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["admin"])
 
@@ -155,122 +158,178 @@ async def update_order_status(
     _admin_id: int = Depends(verify_admin),
 ):
     """Update order status."""
-    # Получаем старый статус заказа
-    old_doc = await db.orders.find_one({"_id": as_object_id(order_id)})
-    if not old_doc:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
+    try:
+        # Получаем старый статус заказа
+        old_doc = await db.orders.find_one({"_id": as_object_id(order_id)})
+        if not old_doc:
+            raise HTTPException(status_code=404, detail="Заказ не найден")
 
-    old_status = old_doc.get("status")
-    new_status = payload.status.value
+        old_status = old_doc.get("status")
+        new_status = payload.status.value
 
-    # Валидация: для статуса "отказано" обязательна причина (не пустая строка)
-    if new_status == OrderStatus.REJECTED.value:
-        if not payload.rejection_reason or not payload.rejection_reason.strip():
-            raise HTTPException(
-                status_code=400, 
-                detail="Для статуса 'отказано' необходимо указать причину отказа"
-            )
-
-    # Если заказ отклоняется, возвращаем товары на склад
-    if new_status == OrderStatus.REJECTED.value and old_status != OrderStatus.REJECTED.value:
-        items = old_doc.get("items", [])
-        for item in items:
-            if item.get("variant_id"):
-                await restore_variant_quantity(
-                    db, item.get("product_id"), item.get("variant_id"), item.get("quantity", 0)
+        # Валидация: для статуса "отказано" обязательна причина (не пустая строка)
+        if new_status == OrderStatus.REJECTED.value:
+            if not payload.rejection_reason or not payload.rejection_reason.strip():
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Для статуса 'отказано' необходимо указать причину отказа"
                 )
 
-    update_operations: dict[str, dict] = {
-        "$set": {
-            "status": payload.status.value,
-            "updated_at": datetime.utcnow(),
-            "can_edit_address": False,  # Адрес нельзя редактировать после создания
+        # Если заказ отклоняется, возвращаем товары на склад
+        if new_status == OrderStatus.REJECTED.value and old_status != OrderStatus.REJECTED.value:
+            items = old_doc.get("items", [])
+            for item in items:
+                if item.get("variant_id"):
+                    try:
+                        await restore_variant_quantity(
+                            db, item.get("product_id"), item.get("variant_id"), item.get("quantity", 0)
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка при восстановлении количества варианта для заказа {order_id}: {e}")
+                        # Продолжаем выполнение, т.к. это не критично для обновления статуса
+
+        update_operations: dict[str, dict] = {
+            "$set": {
+                "status": payload.status.value,
+                "updated_at": datetime.utcnow(),
+                "can_edit_address": False,  # Адрес нельзя редактировать после создания
+            }
         }
-    }
 
-    # Если статус "отказано", сохраняем причину отказа
-    if new_status == OrderStatus.REJECTED.value:
-        update_operations["$set"]["rejection_reason"] = payload.rejection_reason
-        # Убираем delivery_time_slot при отказе
-        if "$unset" not in update_operations:
-            update_operations["$unset"] = {}
-        update_operations["$unset"]["delivery_time_slot"] = ""
-    else:
-        # Если статус меняется с "отказано" на другой, убираем причину отказа
-        if "$unset" not in update_operations:
-            update_operations["$unset"] = {}
-        update_operations["$unset"]["rejection_reason"] = ""
-        
-        # Если статус "принят" и указан delivery_time_slot, сохраняем его
-        if new_status == OrderStatus.ACCEPTED.value and payload.delivery_time_slot:
-            update_operations["$set"]["delivery_time_slot"] = payload.delivery_time_slot
-
-    # Атомарно обновляем заказ - только один раз, без дополнительных операций
-    doc = await db.orders.find_one_and_update(
-        {"_id": as_object_id(order_id)},
-        update_operations,
-        return_document=True,
-    )
-    if not doc:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
-
-    order_payload = Order(**serialize_doc(doc) | {"id": str(doc["_id"])})
-
-    # Отправляем уведомления (fire-and-forget для скорости)
-    user_id = doc.get("user_id")
-    
-    # Проверяем, был ли добавлен или изменен delivery_time_slot
-    old_delivery_time_slot = old_doc.get("delivery_time_slot")
-    new_delivery_time_slot = doc.get("delivery_time_slot")
-    delivery_time_slot_changed = (
-        new_status == OrderStatus.ACCEPTED.value 
-        and new_delivery_time_slot 
-        and old_delivery_time_slot != new_delivery_time_slot
-    )
-    
-    # Отправляем уведомления клиенту если статус изменился
-    if user_id and old_status != new_status:
-        try:
-            rejection_reason = doc.get("rejection_reason") if new_status == OrderStatus.REJECTED.value else None
-            delivery_time_slot = doc.get("delivery_time_slot") if new_status == OrderStatus.ACCEPTED.value else None
+        # Если статус "отказано", сохраняем причину отказа
+        if new_status == OrderStatus.REJECTED.value:
+            update_operations["$set"]["rejection_reason"] = payload.rejection_reason
+            # Убираем delivery_time_slot при отказе
+            if "$unset" not in update_operations:
+                update_operations["$unset"] = {}
+            update_operations["$unset"]["delivery_time_slot"] = ""
+        else:
+            # Если статус меняется с "отказано" на другой, убираем причину отказа
+            if "$unset" not in update_operations:
+                update_operations["$unset"] = {}
+            update_operations["$unset"]["rejection_reason"] = ""
             
-            asyncio.create_task(
-                notify_customer_order_status(
-                    user_id=user_id,
-                    order_id=order_id,
-                    order_status=new_status,
-                    customer_name=doc.get("customer_name"),
-                    rejection_reason=rejection_reason,
-                    delivery_time_slot=delivery_time_slot,
-                )
-            )
-        except Exception as e:
-            logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
-    
-    # Отправляем полное уведомление админу если:
-    # 1. Статус "принят" и есть delivery_time_slot (при изменении статуса или установке времени)
-    # 2. Это происходит независимо от наличия user_id (админу нужно уведомление в любом случае)
-    if new_status == OrderStatus.ACCEPTED.value and new_delivery_time_slot:
-        try:
-            asyncio.create_task(
-                notify_admin_order_accepted(
-                    order_id=order_id,
-                    customer_name=doc.get("customer_name", ""),
-                    customer_phone=doc.get("customer_phone", ""),
-                    delivery_address=doc.get("delivery_address", ""),
-                    total_amount=doc.get("total_amount", 0),
-                    items=doc.get("items", []),
-                    user_id=user_id or 0,  # Может быть None, но функция принимает int
-                    receipt_file_id=doc.get("payment_receipt_file_id"),
-                    delivery_time_slot=new_delivery_time_slot,
-                    db=db,
-                )
-            )
-            logger.info(f"Отправлено уведомление админу о заказе {order_id} с временем доставки {new_delivery_time_slot}")
-        except Exception as e:
-            logger.error(f"Ошибка при отправке уведомления админу о заказе {order_id}: {e}")
+            # Если статус "принят" и указан delivery_time_slot, сохраняем его
+            if new_status == OrderStatus.ACCEPTED.value and payload.delivery_time_slot:
+                update_operations["$set"]["delivery_time_slot"] = payload.delivery_time_slot
 
-    return order_payload
+        # Атомарно обновляем заказ - только один раз, без дополнительных операций
+        doc = await db.orders.find_one_and_update(
+            {"_id": as_object_id(order_id)},
+            update_operations,
+            return_document=True,
+        )
+        if not doc:
+            raise HTTPException(status_code=404, detail="Заказ не найден")
+
+        # Создаем Order объект с обработкой ошибок валидации
+        try:
+            serialized_doc = serialize_doc(doc)
+            serialized_doc["id"] = str(doc["_id"])
+            
+            # Проверяем наличие обязательных полей перед созданием Order
+            required_fields = ["user_id", "customer_name", "customer_phone", "delivery_address", "items", "total_amount"]
+            missing_fields = [field for field in required_fields if field not in serialized_doc or serialized_doc[field] is None]
+            if missing_fields:
+                logger.error(f"Отсутствуют обязательные поля в заказе {order_id}: {missing_fields}")
+                logger.error(f"Документ из БД: {serialized_doc}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Отсутствуют обязательные поля в заказе: {', '.join(missing_fields)}"
+                )
+            
+            # Проверяем, что items является списком
+            if not isinstance(serialized_doc.get("items"), list):
+                logger.error(f"Поле items в заказе {order_id} не является списком: {type(serialized_doc.get('items'))}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Некорректный формат данных заказа: items должен быть списком"
+                )
+            
+            order_payload = Order(**serialized_doc)
+        except HTTPException:
+            # Пробрасываем HTTPException как есть
+            raise
+        except Exception as e:
+            logger.error(f"Ошибка при создании Order объекта для заказа {order_id}: {e}")
+            logger.error(f"Тип ошибки: {type(e).__name__}")
+            logger.error(f"Документ из БД (частично): user_id={serialized_doc.get('user_id')}, items_count={len(serialized_doc.get('items', []))}")
+            # Логируем детали валидации, если это ValidationError от Pydantic
+            if hasattr(e, 'errors'):
+                logger.error(f"Ошибки валидации: {e.errors()}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Ошибка при обработке данных заказа: {str(e)}"
+            )
+
+        # Отправляем уведомления (fire-and-forget для скорости)
+        user_id = doc.get("user_id")
+        
+        # Проверяем, был ли добавлен или изменен delivery_time_slot
+        old_delivery_time_slot = old_doc.get("delivery_time_slot")
+        new_delivery_time_slot = doc.get("delivery_time_slot")
+        delivery_time_slot_changed = (
+            new_status == OrderStatus.ACCEPTED.value 
+            and new_delivery_time_slot 
+            and old_delivery_time_slot != new_delivery_time_slot
+        )
+        
+        # Отправляем уведомления клиенту если статус изменился
+        if user_id and old_status != new_status:
+            try:
+                rejection_reason = doc.get("rejection_reason") if new_status == OrderStatus.REJECTED.value else None
+                delivery_time_slot = doc.get("delivery_time_slot") if new_status == OrderStatus.ACCEPTED.value else None
+                
+                asyncio.create_task(
+                    notify_customer_order_status(
+                        user_id=user_id,
+                        order_id=order_id,
+                        order_status=new_status,
+                        customer_name=doc.get("customer_name"),
+                        rejection_reason=rejection_reason,
+                        delivery_time_slot=delivery_time_slot,
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
+        
+        # Отправляем полное уведомление админу если:
+        # 1. Статус "принят" и есть delivery_time_slot (при изменении статуса или установке времени)
+        # 2. Это происходит независимо от наличия user_id (админу нужно уведомление в любом случае)
+        if new_status == OrderStatus.ACCEPTED.value and new_delivery_time_slot:
+            try:
+                asyncio.create_task(
+                    notify_admin_order_accepted(
+                        order_id=order_id,
+                        customer_name=doc.get("customer_name", ""),
+                        customer_phone=doc.get("customer_phone", ""),
+                        delivery_address=doc.get("delivery_address", ""),
+                        total_amount=doc.get("total_amount", 0),
+                        items=doc.get("items", []),
+                        user_id=user_id or 0,  # Может быть None, но функция принимает int
+                        receipt_file_id=doc.get("payment_receipt_file_id"),
+                        delivery_time_slot=new_delivery_time_slot,
+                        db=db,
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке уведомления админу о заказе {order_id}: {e}")
+
+        return order_payload
+    except HTTPException:
+        # Пробрасываем HTTPException как есть
+        raise
+    except ValueError as e:
+        # Ошибка валидации ObjectId
+        logger.error(f"Ошибка валидации ObjectId для заказа {order_id}: {e}")
+        raise HTTPException(status_code=400, detail=f"Некорректный ID заказа: {str(e)}")
+    except Exception as e:
+        # Логируем все остальные ошибки
+        logger.error(f"Неожиданная ошибка при обновлении статуса заказа {order_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Внутренняя ошибка сервера при обновлении статуса заказа: {str(e)}"
+        )
 
 
 @router.post("/admin/order/{order_id}/quick-accept", response_model=Order)
@@ -328,9 +387,6 @@ async def quick_accept_order(
                 rejection_reason=None,
             )
         except Exception as e:
-            import logging
-
-            logger = logging.getLogger(__name__)
             logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
 
     return Order(**serialize_doc(updated) | {"id": str(updated["_id"])})
@@ -363,10 +419,7 @@ async def send_broadcast(
     _admin_id: int = Depends(verify_admin),
 ):
     """Send broadcast message to all users with production-ready error handling and rate limiting."""
-    import logging
     import time
-    
-    logger = logging.getLogger(__name__)
     settings = get_settings()
     if not settings.telegram_bot_token:
         raise HTTPException(status_code=500, detail="TELEGRAM_BOT_TOKEN не настроен. Добавьте токен бота в .env файл.")
@@ -478,9 +531,6 @@ async def send_broadcast(
                 is_invalid = exc.response.status_code in {400, 403, 404}
                 return False, is_invalid
             except Exception as e:
-                # Логируем неожиданные ошибки при последней попытке
-                if attempt == max_retries - 1:
-                    logger.warning(f"Ошибка при отправке сообщения пользователю {telegram_id}: {type(e).__name__}")
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) * 0.5
                     await asyncio.sleep(wait_time)
@@ -515,15 +565,6 @@ async def send_broadcast(
                 total_count += len(batch)
                 telegram_ids = [customer["telegram_id"] for customer in batch]
 
-                # Логируем прогресс каждые 10 батчей
-                if batch_num % 10 == 0:
-                    elapsed = time.time() - start_time
-                    rate = sent_count / elapsed if elapsed > 0 else 0
-                    logger.info(
-                        f"Рассылка: обработано {total_count} пользователей, "
-                        f"отправлено {sent_count}, ошибок {failed_count}, "
-                        f"скорость {rate:.1f} сообщений/сек"
-                    )
 
                 # Ограничиваем конкуренцию, разбивая на подгруппы
                 for i in range(0, len(telegram_ids), concurrency):
@@ -534,7 +575,6 @@ async def send_broadcast(
                     )
                     for telegram_id, result in zip(chunk, results):
                         if isinstance(result, Exception):
-                            logger.warning(f"Исключение при отправке пользователю {telegram_id}: {result}")
                             failed_count += 1
                             continue
                         sent, invalid = result
@@ -549,12 +589,5 @@ async def send_broadcast(
         await flush_invalids()
 
     elapsed_time = time.time() - start_time
-    rate = sent_count / elapsed_time if elapsed_time > 0 else 0
-
-    # Логируем итоговую статистику
-    logger.info(
-        f"Рассылка завершена: всего {total_count}, отправлено {sent_count}, "
-        f"ошибок {failed_count}, время {elapsed_time:.1f}с, скорость {rate:.1f} сообщений/сек"
-    )
 
     return BroadcastResponse(success=True, sent_count=sent_count, total_count=total_count, failed_count=failed_count)

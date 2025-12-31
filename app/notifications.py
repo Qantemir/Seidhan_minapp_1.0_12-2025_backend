@@ -60,11 +60,9 @@ async def notify_admins_new_order(
 
     # Быстрая проверка настроек
     if not settings.telegram_bot_token:
-        logger.warning(f"TELEGRAM_BOT_TOKEN не настроен, уведомление о новом заказе {order_id} не отправлено")
         return
     
     if not settings.admin_ids:
-        logger.warning(f"ADMIN_IDS не настроен, уведомление о новом заказе {order_id} не отправлено")
         return
 
     # Простое сообщение без деталей
@@ -87,11 +85,9 @@ async def notify_admins_new_order(
         # Выполняем все отправки параллельно
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Логируем результаты
+        # Логируем только ошибки
         success_count = sum(1 for r in results if r is True)
         failed_count = len(results) - success_count
-        if success_count > 0:
-            logger.info(f"Уведомление о новом заказе {order_id} отправлено {success_count} админам")
         if failed_count > 0:
             logger.error(f"Не удалось отправить уведомление о новом заказе {order_id} {failed_count} админам")
 
@@ -158,11 +154,9 @@ async def notify_admin_order_accepted(
 
     # Быстрая проверка настроек
     if not settings.telegram_bot_token:
-        logger.warning(f"TELEGRAM_BOT_TOKEN не настроен, уведомление о принятом заказе {order_id} не отправлено")
         return
     
     if not settings.admin_ids:
-        logger.warning(f"ADMIN_IDS не настроен, уведомление о принятом заказе {order_id} не отправлено")
         return
 
     # Получаем информацию о товарах с вкусами из базы данных
@@ -262,11 +256,9 @@ async def notify_admin_order_accepted(
         # Выполняем все отправки параллельно
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Логируем результаты
+        # Логируем только ошибки
         success_count = sum(1 for r in results if r is True)
         failed_count = len(results) - success_count
-        if success_count > 0:
-            logger.info(f"Полное уведомление о принятом заказе {order_id} (время: {delivery_time_slot}) отправлено {success_count} админам")
         if failed_count > 0:
             logger.error(f"Не удалось отправить полное уведомление о принятом заказе {order_id} {failed_count} админам")
 
@@ -344,7 +336,6 @@ async def _send_notification_with_receipt(
                     return True
                 else:
                     error_desc = result.get("description", "Unknown error")
-                    logger.warning(f"Telegram API вернул ошибку при отправке файла администратору {admin_id}: {error_desc}")
                     file_sent = False
             except httpx.HTTPStatusError as e:
                 logger.exception(f"HTTP ошибка при отправке файла администратору {admin_id}: {e.response.status_code} - {e.response.text}", exc_info=e)
@@ -376,8 +367,6 @@ async def _send_notification_with_receipt(
             response.raise_for_status()  # Вызовет исключение для HTTP ошибок
             result = response.json()
             if not result.get("ok"):
-                error_desc = result.get("description", "Unknown error")
-                logger.warning(f"Telegram API вернул ошибку при отправке сообщения администратору {admin_id}: {error_desc}")
                 return False
 
         return True
@@ -440,9 +429,7 @@ async def notify_customer_order_status(
                 },
             )
             result = response.json()
-            if result.get("ok"):
-                logger.info(f"Уведомление клиенту отправлено успешно: user_id={user_id}, order_id={order_id}, status={order_status}")
-            else:
+            if not result.get("ok"):
                 logger.error(f"Ошибка при отправке уведомления клиенту: {result.get('description', 'Unknown error')}, user_id={user_id}, order_id={order_id}")
     except Exception as e:
         logger.error(f"Исключение при отправке уведомления клиенту: {e}, user_id={user_id}, order_id={order_id}")

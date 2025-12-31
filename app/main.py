@@ -392,18 +392,13 @@ async def cleanup_orders():
             # Вычисляем секунды до следующего запуска
             seconds_until_next = (next_run - now).total_seconds()
             
-            logger.info(f"Следующая очистка заказов запланирована на {next_run.strftime('%Y-%m-%d %H:%M:%S')} UTC (через {seconds_until_next/3600:.1f} часов)")
-            
             # Ждем до времени запуска
             await asyncio.sleep(seconds_until_next)
 
             # Получаем базу данных
             db = await get_db()
             if db is None:
-                logger.warning("База данных недоступна, пропускаем очистку заказов")
                 continue
-
-            logger.info("Начало автоматической очистки заказов")
             total_deleted = 0
             batch_size = 100
 
@@ -426,7 +421,6 @@ async def cleanup_orders():
                         deleted_by_admin_count += 1
                         total_deleted += 1
                     except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
-                        logger.warning("Проблемы с подключением к БД, прерываем обработку батча")
                         break
                     except Exception as e:
                         logger.error(f"Ошибка при удалении заказа, помеченного администратором {order_doc.get('_id')}: {e}")
@@ -454,31 +448,19 @@ async def cleanup_orders():
                         # Дополнительная проверка: убеждаемся, что updated_at существует и не None
                         updated_at = order_doc.get("updated_at")
                         if updated_at is None:
-                            logger.warning(f"Заказ {order_id} не имеет поля updated_at, пропускаем")
                             continue
                         
                         await permanently_delete_order_entry(db, order_doc)
                         completed_orders_count += 1
                         total_deleted += 1
                     except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
-                        logger.warning("Проблемы с подключением к БД, прерываем обработку батча")
                         break
                     except Exception as e:
                         logger.error(f"Ошибка при удалении выполненного/отмененного заказа {order_doc.get('_id')}: {e}")
 
-            # Логируем результаты
-            if total_deleted > 0:
-                logger.info(
-                    f"Автоматически удалено {total_deleted} заказов: "
-                    f"{deleted_by_admin_count} помеченных администратором, "
-                    f"{completed_orders_count} выполненных/отмененных"
-                )
-            else:
-                logger.info("Заказов для удаления не найдено")
 
         except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
             # Временные проблемы с подключением - ждем час и пробуем снова
-            logger.warning("Проблемы с подключением к БД, повторим попытку через час")
             await asyncio.sleep(3600)
         except Exception as e:
             logger.error(f"Ошибка в фоновой задаче очистки заказов: {e}", exc_info=True)
@@ -516,7 +498,6 @@ async def startup():
         logger = logging.getLogger(__name__)
         
         if not settings.telegram_bot_token or not settings.public_url:
-            logger.info("Webhook не настроен: отсутствует TELEGRAM_BOT_TOKEN или PUBLIC_URL")
             return
         
         webhook_url = f"{settings.public_url.rstrip('/')}{settings.api_prefix}/bot/webhook"
@@ -536,8 +517,8 @@ async def startup():
                             json={"drop_pending_updates": False},
                             timeout=30.0,
                         )
-                    except Exception as delete_error:
-                        logger.debug(f"Не удалось удалить старый webhook (не критично): {delete_error}")
+                    except Exception:
+                        pass
 
                     # Устанавливаем новый webhook
                     response = await client.post(
@@ -547,18 +528,15 @@ async def startup():
                     )
                     result = response.json()
                     if result.get("ok"):
-                        logger.info(f"✅ Webhook успешно настроен: {webhook_url}")
                         return
                     else:
                         error_desc = result.get("description", "Unknown error")
-                        logger.warning(f"⚠️ Не удалось настроить webhook (попытка {attempt + 1}/{max_retries}): {error_desc}")
                         if attempt < max_retries - 1:
                             await asyncio.sleep(retry_delay)
                             continue
                         logger.error(f"❌ Не удалось настроить webhook после {max_retries} попыток")
                         logger.error(f"Проверьте, что URL {webhook_url} доступен из интернета")
             except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as e:
-                logger.warning(f"⚠️ Таймаут/ошибка подключения при настройке webhook (попытка {attempt + 1}/{max_retries}): {type(e).__name__}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
                     continue

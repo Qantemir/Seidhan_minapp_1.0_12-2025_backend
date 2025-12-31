@@ -217,10 +217,7 @@ class Order(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     can_edit_address: bool = True
     payment_receipt_file_id: Optional[str] = None  # ID файла в GridFS
-    payment_receipt_url: Optional[str] = None  # Устаревшее поле, оставлено для обратной совместимости
     payment_receipt_filename: Optional[str] = None
-    delivery_type: Optional[str] = None
-    payment_type: Optional[str] = None
     delivery_time_slot: Optional[str] = None  # Временной промежуток доставки (например, "13:00-14:00")
 
     class Config:

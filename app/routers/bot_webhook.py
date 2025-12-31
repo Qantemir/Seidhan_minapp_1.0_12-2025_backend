@@ -116,10 +116,6 @@ async def handle_bot_webhook(
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     """Обрабатывает webhook от Telegram Bot API (callback от inline-кнопок и команды)."""
-    logger.info(
-        f"Webhook received: method={request.method}, path={request.url.path}, "
-        f"client={request.client.host if request.client else 'unknown'}"
-    )
     try:
         # Try to get JSON data
         try:
@@ -128,8 +124,6 @@ async def handle_bot_webhook(
             logger.error(f"Failed to parse JSON from webhook: {json_error}")
             # Return ok to Telegram even if JSON parsing fails
             return {"ok": True, "error": "Invalid JSON"}
-        
-        logger.debug(f"Webhook data: {data}")
 
         # Обрабатываем команду /start
         if isinstance(data, dict) and "message" in data:
@@ -191,8 +185,6 @@ async def handle_bot_webhook(
 
             order_id = parts[1]
             new_status_value = parts[2]
-            
-            logger.info(f"Processing status change: order_id={order_id}, new_status={new_status_value}, user_id={user_id}")
 
             # Получаем заказ
             doc = await db.orders.find_one({"_id": as_object_id(order_id)})
@@ -290,7 +282,6 @@ async def handle_bot_webhook(
                 if customer_user_id and old_status != new_status_value:
                     try:
                         rejection_reason = updated.get("rejection_reason") if new_status_value == OrderStatus.REJECTED.value else None
-                        logger.info(f"Sending notification to customer: user_id={customer_user_id}, order_id={order_id}, status={new_status_value}")
                         await notify_customer_order_status(
                             user_id=customer_user_id,
                             order_id=order_id,
@@ -298,7 +289,6 @@ async def handle_bot_webhook(
                             customer_name=updated.get("customer_name"),
                             rejection_reason=rejection_reason,
                         )
-                        logger.info(f"Notification sent successfully to customer {customer_user_id}")
                     except Exception as e:
                         logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
             else:
@@ -581,7 +571,6 @@ async def _handle_start_command(chat_id: int, user_id: int):
             )
             result = response.json()
             if result.get("ok"):
-                logger.info(f"Start command handled for user {user_id}")
                 return True
             else:
                 logger.error(f"Failed to send start message: {result.get('description', 'Unknown error')}")

@@ -142,20 +142,15 @@ async def cleanup_expired_carts_periodic():
             
             expired_carts.extend(carts_without_updated)
 
-            cleaned_count = 0
             for cart in expired_carts:
                 try:
                     # Используем существующую функцию для очистки
-                    if await cleanup_expired_cart(db, cart):
-                        cleaned_count += 1
+                    await cleanup_expired_cart(db, cart)
                 except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
                     # Временные проблемы с подключением - пропускаем эту корзину
                     pass
                 except Exception as e:
                     logger.error(f"Ошибка при очистке корзины {cart.get('_id')}: {e}")
-
-            if cleaned_count > 0:
-                logger.info(f"Очищено просроченных корзин: {cleaned_count}")
 
             # Ждем перед следующей проверкой (10 минут для экономии ресурсов)
             await asyncio.sleep(PRODUCTION_INTERVAL)
