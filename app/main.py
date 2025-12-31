@@ -363,6 +363,13 @@ async def apply_security_and_cache_headers(request, call_next):
     elif path.startswith("/assets/") or path.endswith((".js", ".css", ".png", ".jpg", ".svg", ".woff2")):
         # Статические файлы кэшируются на 1 год
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif not path.startswith("/api/") and not path.startswith("/_next/"):
+        # HTML страницы (динамические) - не кэшируем агрессивно
+        # Разрешаем только условные запросы (ETag/If-None-Match), но не долгосрочное кэширование
+        # Это позволит Next.js использовать 304 для неизменённых страниц, но не будет кэшировать устаревший контент
+        if "Cache-Control" not in response.headers:
+            response.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
+            response.headers["Vary"] = "Accept-Encoding"
 
     # Убрали Permissions-Policy заголовок, чтобы избежать ошибок с browsing-topics
     # response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
@@ -471,10 +478,13 @@ async def cleanup_orders():
 @app.on_event("startup")
 async def startup():
     """Initialize application on startup."""
-    # Настраиваем логирование для максимальной производительности
-    logging.getLogger("pymongo").setLevel(logging.ERROR)  # Только ошибки
+    # Настраиваем логирование - только ошибки
+    logging.basicConfig(level=logging.ERROR)
+    logging.getLogger("pymongo").setLevel(logging.ERROR)
     logging.getLogger("motor").setLevel(logging.ERROR)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)  # Убираем access logs
+    logging.getLogger("uvicorn").setLevel(logging.ERROR)
+    logging.getLogger("uvicorn.access").setLevel(logging.ERROR)
+    logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
 
     # Логируем информацию о конфигурации при старте
     logger = logging.getLogger(__name__)
