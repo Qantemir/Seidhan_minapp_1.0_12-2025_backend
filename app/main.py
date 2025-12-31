@@ -510,36 +510,68 @@ async def startup():
     asyncio.create_task(cleanup_expired_carts_periodic())
 
     # Настраиваем webhook для Telegram Bot API (если указан публичный URL)
-    logger = logging.getLogger(__name__)
+    # Делаем это в фоне, чтобы не блокировать запуск приложения
+    async def setup_webhook_background():
+        """Настраивает webhook в фоне с повторными попытками."""
+        logger = logging.getLogger(__name__)
+        
+        if not settings.telegram_bot_token or not settings.public_url:
+            logger.info("Webhook не настроен: отсутствует TELEGRAM_BOT_TOKEN или PUBLIC_URL")
+            return
+        
+        webhook_url = f"{settings.public_url.rstrip('/')}{settings.api_prefix}/bot/webhook"
+        max_retries = 3
+        retry_delay = 5  # секунд
+        
+        for attempt in range(max_retries):
+            try:
+                import httpx
+                
+                # Увеличиваем timeout для webhook настройки
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    # Сначала удаляем старый webhook (если есть)
+                    try:
+                        await client.post(
+                            f"https://api.telegram.org/bot{settings.telegram_bot_token}/deleteWebhook",
+                            json={"drop_pending_updates": False},
+                            timeout=30.0,
+                        )
+                    except Exception as delete_error:
+                        logger.debug(f"Не удалось удалить старый webhook (не критично): {delete_error}")
 
-    if settings.telegram_bot_token and settings.public_url:
-        try:
-            import httpx
-
-            webhook_url = f"{settings.public_url.rstrip('/')}{settings.api_prefix}/bot/webhook"
-
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                # Сначала удаляем старый webhook (если есть)
-                try:
-                    await client.post(
-                        f"https://api.telegram.org/bot{settings.telegram_bot_token}/deleteWebhook",
-                        json={"drop_pending_updates": False},
+                    # Устанавливаем новый webhook
+                    response = await client.post(
+                        f"https://api.telegram.org/bot{settings.telegram_bot_token}/setWebhook",
+                        json={"url": webhook_url, "allowed_updates": ["callback_query", "message"]},
+                        timeout=30.0,
                     )
-                except Exception:
-                    pass
-
-                # Устанавливаем новый webhook
-                response = await client.post(
-                    f"https://api.telegram.org/bot{settings.telegram_bot_token}/setWebhook",
-                    json={"url": webhook_url, "allowed_updates": ["callback_query", "message"]},  # Callback queries и сообщения
-                )
-                result = response.json()
-                if not result.get("ok"):
-                    error_desc = result.get("description", "Unknown error")
-                    logger.error(f"❌ Не удалось настроить webhook: {error_desc}")
-                    logger.error(f"Проверьте, что URL {webhook_url} доступен из интернета")
-        except Exception as e:
-            logger.error(f"Ошибка при настройке webhook: {e}", exc_info=True)
+                    result = response.json()
+                    if result.get("ok"):
+                        logger.info(f"✅ Webhook успешно настроен: {webhook_url}")
+                        return
+                    else:
+                        error_desc = result.get("description", "Unknown error")
+                        logger.warning(f"⚠️ Не удалось настроить webhook (попытка {attempt + 1}/{max_retries}): {error_desc}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        logger.error(f"❌ Не удалось настроить webhook после {max_retries} попыток")
+                        logger.error(f"Проверьте, что URL {webhook_url} доступен из интернета")
+            except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as e:
+                logger.warning(f"⚠️ Таймаут/ошибка подключения при настройке webhook (попытка {attempt + 1}/{max_retries}): {type(e).__name__}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    continue
+                logger.error(f"❌ Не удалось подключиться к Telegram API для настройки webhook после {max_retries} попыток")
+                logger.error("Приложение продолжит работу, но webhook может быть не настроен")
+            except Exception as e:
+                logger.error(f"Ошибка при настройке webhook: {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    continue
+    
+    # Запускаем настройку webhook в фоне (не блокируем старт приложения)
+    asyncio.create_task(setup_webhook_background())
 
 
 @app.on_event("shutdown")
